@@ -1,6 +1,10 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import path from "node:path";
 import { z } from "zod";
+import {
+  symbolNavigationProviders,
+  type SymbolSourceProject,
+} from "./symbol-provider";
 
 const workspaceEntrySchema = z.object({
   path: z.string(),
@@ -30,6 +34,12 @@ const lastTurnReviewSchema = z.object({
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
 });
+const symbolDefinitionSchema = z.object({
+  path: z.string(),
+  line: z.number().int().positive(),
+  column: z.number().int().positive(),
+  preview: z.string(),
+});
 
 export const rpcContract = defineRpcContract({
   workspace: {
@@ -51,6 +61,21 @@ export const rpcContract = defineRpcContract({
       message: z.string().nullable(),
       path: z.string().nullable(),
       content: z.string().nullable(),
+    }),
+  },
+  symbolDefinition: {
+    input: z.object({
+      threadId: z.string(),
+      path: z.string().min(1),
+      line: z.number().int().positive(),
+      column: z.number().int().positive(),
+    }).strict(),
+    output: z.object({
+      state: z.enum(["ready", "not_found", "not_available"]),
+      providerId: z.string().nullable(),
+      providerLabel: z.string().nullable(),
+      message: z.string().nullable(),
+      definitions: z.array(symbolDefinitionSchema),
     }),
   },
   review: {
@@ -119,7 +144,7 @@ async function workspaceForThread(bb: BbPluginApi, threadId: string) {
     environmentId: thread.environmentId,
   });
   if (environment.path === null) return null;
-  return environment;
+  return { ...environment, path: environment.path };
 }
 
 async function ignoredWorkspacePaths(
@@ -221,7 +246,183 @@ function safeWorkspacePath(rootPath: string, relativePath: string): string | nul
     : null;
 }
 
+const SYMBOL_PROJECT_MAX_FILES = 1_500;
+const SYMBOL_PROJECT_MAX_BYTES = 12 * 1024 * 1024;
+const SYMBOL_PROJECT_CACHE_MS = 15_000;
+
+type SymbolProjectCacheEntry = {
+  expiresAt: number;
+  project: SymbolSourceProject;
+};
+
+function packageNameFromImport(specifier: string): string | null {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("node:")) {
+    return null;
+  }
+  const parts = specifier.split("/");
+  return specifier.startsWith("@")
+    ? parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null
+    : parts[0] ?? null;
+}
+
+function importedModules(files: ReadonlyMap<string, string>): { sourcePath: string; specifier: string }[] {
+  const modules: { sourcePath: string; specifier: string }[] = [];
+  const importPattern = /(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\()\s*["']([^"']+)["']/gu;
+  for (const [sourcePath, content] of files) {
+    for (const match of content.matchAll(importPattern)) {
+      const specifier = match[1];
+      if (specifier !== undefined) modules.push({ sourcePath, specifier });
+      if (modules.length >= 400) return modules;
+    }
+  }
+  return modules;
+}
+
+function importedPackages(files: ReadonlyMap<string, string>): string[] {
+  const packages = new Set<string>();
+  for (const { specifier } of importedModules(files)) {
+    const packageName = packageNameFromImport(specifier);
+    if (packageName !== null) packages.add(packageName);
+    if (packages.size >= 24) break;
+  }
+  return [...packages];
+}
+
+function dependencyDeclarationCandidates(files: ReadonlyMap<string, string>): string[] {
+  const candidates = new Set<string>();
+  for (const { sourcePath, specifier } of importedModules(files)) {
+    let base: string | null = null;
+    if (specifier.startsWith(".") && sourcePath.startsWith("node_modules/")) {
+      base = path.posix.normalize(path.posix.join(path.posix.dirname(sourcePath), specifier));
+    } else if (packageNameFromImport(specifier) !== null) {
+      base = `node_modules/${specifier}`;
+      const packageName = packageNameFromImport(specifier);
+      if (packageName !== null) candidates.add(`node_modules/${packageName}/package.json`);
+    }
+    if (base === null) continue;
+    const extensionless = base.replace(/\.(?:mjs|cjs|js|jsx)$/u, "");
+    candidates.add(`${base}.d.ts`);
+    candidates.add(`${extensionless}.d.ts`);
+    candidates.add(`${base}/index.d.ts`);
+  }
+  for (const [filePath, content] of files) {
+    if (!filePath.endsWith("/package.json")) continue;
+    try {
+      const packageJson = JSON.parse(content) as { types?: unknown; typings?: unknown };
+      const declaration = typeof packageJson.types === "string"
+        ? packageJson.types
+        : typeof packageJson.typings === "string"
+          ? packageJson.typings
+          : null;
+      if (declaration !== null) {
+        candidates.add(path.posix.normalize(path.posix.join(path.posix.dirname(filePath), declaration)));
+      }
+    } catch {
+      // Ignore malformed dependency metadata.
+    }
+  }
+  return [...candidates];
+}
+
+async function readSymbolFiles(
+  bb: BbPluginApi,
+  environment: NonNullable<Awaited<ReturnType<typeof workspaceForThread>>>,
+  relativePaths: readonly string[],
+  files: Map<string, string>,
+): Promise<void> {
+  let totalBytes = [...files.values()].reduce((total, content) => total + content.length, 0);
+  for (let offset = 0; offset < relativePaths.length; offset += 16) {
+    if (files.size >= SYMBOL_PROJECT_MAX_FILES || totalBytes >= SYMBOL_PROJECT_MAX_BYTES) break;
+    const batch = relativePaths.slice(offset, offset + 16);
+    const results = await Promise.all(batch.map(async (relativePath) => {
+      if (files.has(relativePath)) return null;
+      const absolutePath = safeWorkspacePath(environment.path, relativePath);
+      if (absolutePath === null) return null;
+      try {
+        const result = await bb.sdk.files.read({
+          hostId: environment.hostId,
+          path: absolutePath,
+          rootPath: environment.path,
+        });
+        if (result.contentEncoding !== "utf8" || result.sizeBytes > 1024 * 1024) return null;
+        return { path: relativePath.replaceAll("\\", "/"), content: result.content };
+      } catch {
+        return null;
+      }
+    }));
+    for (const result of results) {
+      if (result === null || files.size >= SYMBOL_PROJECT_MAX_FILES) continue;
+      if (totalBytes + result.content.length > SYMBOL_PROJECT_MAX_BYTES) break;
+      files.set(result.path, result.content);
+      totalBytes += result.content.length;
+    }
+  }
+}
+
+async function buildSymbolProject(
+  bb: BbPluginApi,
+  environment: NonNullable<Awaited<ReturnType<typeof workspaceForThread>>>,
+): Promise<SymbolSourceProject> {
+  const gitEntries = environment.isGitRepo
+    ? await gitWorkspaceEntries(bb, environment.id).catch(() => null)
+    : null;
+  const workspaceEntries = gitEntries ?? (await bb.sdk.files.listPaths({
+    hostId: environment.hostId,
+    path: environment.path,
+    limit: SYMBOL_PROJECT_MAX_FILES,
+    includeFiles: true,
+    includeDirectories: false,
+  })).paths;
+  const projectPaths = workspaceEntries
+    .filter((entry) => entry.kind === "file")
+    .map((entry) => entry.path.replaceAll("\\", "/"))
+    .filter((filePath) =>
+      filePath.endsWith("package.json") ||
+      symbolNavigationProviders.some((provider) => provider.supports(filePath))
+    )
+    .slice(0, SYMBOL_PROJECT_MAX_FILES);
+  const files = new Map<string, string>();
+  await readSymbolFiles(bb, environment, projectPaths, files);
+
+  for (let round = 0; round < 3; round += 1) {
+    const sizeBefore = files.size;
+    await readSymbolFiles(
+      bb,
+      environment,
+      dependencyDeclarationCandidates(files),
+      files,
+    );
+    if (files.size === sizeBefore) break;
+  }
+
+  // Best-effort external dependency indexing. Only packages actually imported
+  // by project sources are traversed, and only declaration files are retained.
+  for (const packageName of importedPackages(files)) {
+    if (files.size >= SYMBOL_PROJECT_MAX_FILES) break;
+    const dependencyRoot = path.join(environment.path, "node_modules", packageName);
+    try {
+      const result = await bb.sdk.files.listPaths({
+        hostId: environment.hostId,
+        path: dependencyRoot,
+        limit: 250,
+        includeFiles: true,
+        includeDirectories: false,
+      });
+      const dependencyPaths = result.paths
+        .filter((entry) => entry.kind === "file")
+        .map((entry) => `node_modules/${packageName}/${entry.path.replaceAll("\\", "/")}`)
+        .filter((filePath) => filePath.endsWith(".d.ts") || filePath.endsWith("package.json"));
+      await readSymbolFiles(bb, environment, dependencyPaths, files);
+    } catch {
+      // Dependencies are optional: workspace navigation remains useful when
+      // node_modules is absent or lives outside the workspace.
+    }
+  }
+  return { files };
+}
+
 export default async function plugin(bb: BbPluginApi) {
+  const symbolProjects = new Map<string, SymbolProjectCacheEntry>();
   bb.rpc.register(rpcContract, {
     async workspace({ threadId }) {
       const environment = await workspaceForThread(bb, threadId);
@@ -308,6 +509,58 @@ export default async function plugin(bb: BbPluginApi) {
         path: relativePath,
         content: result.content,
       };
+    },
+    async symbolDefinition({ threadId, path: relativePath, line, column }) {
+      const provider = symbolNavigationProviders.find((candidate) =>
+        candidate.supports(relativePath),
+      );
+      if (provider === undefined) {
+        return {
+          state: "not_available" as const,
+          providerId: null,
+          providerLabel: null,
+          message: "No symbol navigation provider is connected for this file type.",
+          definitions: [],
+        };
+      }
+      const environment = await workspaceForThread(bb, threadId);
+      if (environment === null || environment.path === null) {
+        return {
+          state: "not_available" as const,
+          providerId: provider.id,
+          providerLabel: provider.label,
+          message: "This thread has no browsable workspace environment.",
+          definitions: [],
+        };
+      }
+      const cached = symbolProjects.get(environment.id);
+      const project = cached !== undefined && cached.expiresAt > Date.now()
+        ? cached.project
+        : await buildSymbolProject(bb, environment);
+      symbolProjects.set(environment.id, {
+        expiresAt: Date.now() + SYMBOL_PROJECT_CACHE_MS,
+        project,
+      });
+      const definitions = provider.findDefinitions(project, {
+        path: relativePath,
+        line,
+        column,
+      });
+      return definitions.length === 0
+        ? {
+            state: "not_found" as const,
+            providerId: provider.id,
+            providerLabel: provider.label,
+            message: "The provider did not find a definition for this symbol.",
+            definitions: [],
+          }
+        : {
+            state: "ready" as const,
+            providerId: provider.id,
+            providerLabel: provider.label,
+            message: null,
+            definitions,
+          };
     },
     async review({ threadId, target }) {
       const environment = await workspaceForThread(bb, threadId);

@@ -2,6 +2,20 @@
 
 A BB plugin.
 
+## Symbol navigation prototype
+
+Files and Review support go-to-definition for TypeScript and JavaScript when
+the bundled TypeScript provider is available. Hold Command (macOS) or Control
+(Windows/Linux) and click a symbol. The definition opens in a Files panel tab
+and the destination line is highlighted.
+
+The provider indexes workspace source files lazily and follows imported
+declaration files from installed dependencies on a best-effort basis. Other
+file types keep the normal read-only preview without a navigation affordance.
+The frontend talks only to the generic `symbolDefinition` RPC, so another
+language-server or IDE-backed provider can be added without changing the file
+or review UI.
+
 ## UI components
 
 `components/ui/` is vendored source you own (the shadcn model): edit the
