@@ -25,6 +25,7 @@ type ReviewResult = { state: "ready" | "not_available"; message: string | null; 
 type LastTurnReview = { state: "ready" | "not_available"; message: string | null; turnId: string | null; workspacePath: string | null; diff: string | null; additions: number; deletions: number };
 type TurnChangeFile = { path: string; additions: number; deletions: number; patch: string };
 type ReviewSidebarFile = { path: string; additions: number; deletions: number };
+type DiffStyle = "unified" | "split";
 
 function buildTree(entries: WorkspaceEntry[]): TreeNode[] {
   const roots: TreeNode[] = [];
@@ -101,6 +102,10 @@ function diffRootPath(paths: readonly string[], workspacePath: string | null): s
   return shared.length > 1 ? shared.join("/") || "/" : workspacePath;
 }
 
+function reviewFileId(path: string): string {
+  return `cr-review-file-${encodeURIComponent(path)}`;
+}
+
 function CodePreview({ file }: { file: WorkspaceFileResult }) {
   const composer = useComposer();
   const [commentLine, setCommentLine] = useState<number | null>(null);
@@ -121,7 +126,7 @@ function CodePreview({ file }: { file: WorkspaceFileResult }) {
     setComment("");
     setCommentLine(null);
   };
-  return <div className="min-w-max p-4"><div className="cr-code-lines">{lines.map((line, index) => <div className="cr-code-line" key={index}><span className="cr-code-line-number" aria-hidden="true">{index + 1}</span><code dangerouslySetInnerHTML={{ __html: highlightLine(line) }} /><button className="cr-code-comment-button" type="button" aria-label={`Add comment on line ${index + 1}`} onClick={() => setCommentLine(index + 1)}>+</button></div>)}</div>{commentLine !== null ? <form className="cr-review-comment-form cr-file-comment-form" onSubmit={(event) => { event.preventDefault(); addCommentToChat(); }}><div className="cr-review-comment-title"><strong>Local comment</strong><span>Comment on line L{commentLine}</span></div><textarea value={comment} autoFocus placeholder="Add a comment" aria-label={`Comment on ${file.path} line ${commentLine}`} onChange={(event) => setComment(event.target.value)} /><div className="cr-review-comment-actions"><button type="button" onClick={() => { setComment(""); setCommentLine(null); }}>Cancel</button><button type="submit" disabled={comment.trim().length === 0}>Add to chat</button></div></form> : null}</div>;
+  return <div className="cr-code min-w-max p-4"><div className="cr-code-lines">{lines.map((line, index) => <div className="cr-code-line" key={index}><span className="cr-code-line-number" aria-hidden="true">{index + 1}</span><code dangerouslySetInnerHTML={{ __html: highlightLine(line) }} /><button className="cr-code-comment-button" type="button" aria-label={`Add comment on line ${index + 1}`} onClick={() => setCommentLine(index + 1)}>+</button></div>)}</div>{commentLine !== null ? <form className="cr-review-comment-form cr-file-comment-form" onSubmit={(event) => { event.preventDefault(); addCommentToChat(); }}><div className="cr-review-comment-title"><strong>Local comment</strong><span>Comment on line L{commentLine}</span></div><textarea value={comment} autoFocus placeholder="Add a comment" aria-label={`Comment on ${file.path} line ${commentLine}`} onChange={(event) => setComment(event.target.value)} /><div className="cr-review-comment-actions"><button type="button" onClick={() => { setComment(""); setCommentLine(null); }}>Cancel</button><button type="submit" disabled={comment.trim().length === 0}>Add to chat</button></div></form> : null}</div>;
 }
 
 function FileBreadcrumbs({ rootName, path, tree, onSelect }: { rootName: string | null; path: string | null; tree: TreeNode[]; onSelect: (path: string) => void }) {
@@ -242,6 +247,8 @@ function ReviewPanel({ threadId, params }: PluginThreadPanelProps) {
   const [patches, setPatches] = useState<Map<string, { patch: string; truncated: boolean }>>(() => new Map());
   const [isFilesSidebarVisible, setIsFilesSidebarVisible] = useState(true);
   const [filesSidebarWidth, setFilesSidebarWidth] = useState(288);
+  const [diffStyle, setDiffStyle] = useState<DiffStyle>("unified");
+  const [expandedLastTurnFiles, setExpandedLastTurnFiles] = useState<Set<string>>(() => new Set());
   useEffect(() => { setMode(initialMode); }, [initialMode]);
   const load = useCallback(async () => {
     setError(null);
@@ -281,6 +288,20 @@ function ReviewPanel({ threadId, params }: PluginThreadPanelProps) {
   }, []);
   const lastTurnFiles = filesFromTurnDiff(lastTurn?.diff ?? "");
   const lastTurnRoot = diffRootPath(lastTurnFiles.map((file) => file.path), lastTurn?.workspacePath ?? null);
+  const scrollToReviewFile = useCallback((filePath: string) => {
+    window.setTimeout(() => document.getElementById(reviewFileId(filePath))?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  }, []);
+  const openReviewFile = useCallback(async (filePath: string) => {
+    if (mode === "last_turn") {
+      setExpandedLastTurnFiles((current) => new Set(current).add(filePath));
+      scrollToReviewFile(filePath);
+      return;
+    }
+    const file = review?.files.find((candidate) => candidate.path === filePath);
+    if (file === undefined) return;
+    if (!expanded.has(filePath)) await toggleFile(file);
+    scrollToReviewFile(filePath);
+  }, [expanded, mode, review?.files, scrollToReviewFile, toggleFile]);
   const sidebarFiles: ReviewSidebarFile[] = mode === "last_turn"
     ? lastTurnFiles.map(({ path, additions, deletions }) => ({ path: workspaceRelativePath(path, lastTurnRoot), additions, deletions }))
     : (review?.files ?? []).map(({ path, additions, deletions }) => ({ path, additions, deletions }));
@@ -289,37 +310,39 @@ function ReviewPanel({ threadId, params }: PluginThreadPanelProps) {
       ? <EmptyState message="Loading last turn…" />
       : lastTurn.state === "not_available"
         ? <EmptyState message={lastTurn.message ?? "Last turn unavailable."} onReload={load} />
-        : <LastTurnDiff diff={lastTurn.diff} threadId={threadId} workspacePath={lastTurnRoot} />
+        : <LastTurnDiff diff={lastTurn.diff} threadId={threadId} workspacePath={lastTurnRoot} diffStyle={diffStyle} expandedFiles={expandedLastTurnFiles} onExpandedChange={setExpandedLastTurnFiles} />
     : review === null
       ? <EmptyState message="Loading review…" />
       : review.state === "not_available"
         ? <EmptyState message={review.message ?? "Review unavailable."} onReload={load} />
-        : <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">{review.files.length === 0 ? <EmptyState message="No changes to review." /> : review.files.map((file) => <ReviewFileCard key={file.path} file={file} patch={patches.get(file.path) ?? null} isExpanded={expanded.has(file.path)} onToggle={() => void toggleFile(file)} />)}</div>;
-  return <main className="flex h-full min-h-0 flex-col bg-background text-foreground"><header className="cr-review-header"><span className="text-sm font-medium">Review</span><button className="cr-review-refresh" onClick={() => void load()} title="Refresh review" aria-label="Refresh review">↻</button><button className="cr-browser-toggle" data-active={isFilesSidebarVisible ? "true" : "false"} aria-pressed={isFilesSidebarVisible} onClick={() => setIsFilesSidebarVisible((visible) => !visible)} title={isFilesSidebarVisible ? "Hide changed files" : "Show changed files"} aria-label={isFilesSidebarVisible ? "Hide changed files" : "Show changed files"}><FileBrowserIcon /></button></header>{error !== null ? <EmptyState message={error} onReload={load} /> : <section className="flex min-h-0 flex-1 flex-col"><div className="cr-review-toolbar"><label className="sr-only" htmlFor="review-target">Review changes</label><select id="review-target" className="cr-review-select" value={selectedValue} onChange={(event) => { if (event.target.value === "last_turn") { setMode("last_turn"); return; } setMode("workspace"); setTarget(event.target.value === "uncommitted" ? { kind: "uncommitted" } : { kind: "all", mergeBaseBranch: event.target.value }); }}><option value="last_turn">Last turn</option><option value="uncommitted">Uncommitted changes</option>{review?.selectedBaseBranch ? <option value={review.selectedBaseBranch}>All changes from {review.selectedBaseBranch}</option> : null}{review?.baseBranches.filter((branch) => branch !== review.selectedBaseBranch).map((branch) => <option key={branch} value={branch}>All changes from {branch}</option>)}</select><span className="cr-review-summary">{mode === "last_turn" ? "Last turn" : review?.branch ?? "HEAD"} · <b className="cr-diff-added">+{additions}</b> <b className="cr-diff-deleted">−{deletions}</b></span></div><div ref={reviewLayoutRef} className="flex min-h-0 flex-1">{content}{isFilesSidebarVisible ? <><div className="cr-resize-handle" onPointerDown={beginSidebarResize} role="separator" aria-orientation="vertical" aria-label="Resize changed files" /><ReviewFilesSidebar files={sidebarFiles} threadId={threadId} width={filesSidebarWidth} /></> : null}</div></section>}</main>;
+        : <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">{review.files.length === 0 ? <EmptyState message="No changes to review." /> : review.files.map((file) => <ReviewFileCard key={file.path} file={file} patch={patches.get(file.path) ?? null} isExpanded={expanded.has(file.path)} onToggle={() => void toggleFile(file)} diffStyle={diffStyle} />)}</div>;
+  return <main className="flex h-full min-h-0 flex-col bg-background text-foreground"><header className="cr-review-header"><span className="text-sm font-medium">Review</span><button className="cr-review-refresh" onClick={() => void load()} title="Refresh review" aria-label="Refresh review">↻</button><button className="cr-browser-toggle" data-active={isFilesSidebarVisible ? "true" : "false"} aria-pressed={isFilesSidebarVisible} onClick={() => setIsFilesSidebarVisible((visible) => !visible)} title={isFilesSidebarVisible ? "Hide changed files" : "Show changed files"} aria-label={isFilesSidebarVisible ? "Hide changed files" : "Show changed files"}><FileBrowserIcon /></button></header>{error !== null ? <EmptyState message={error} onReload={load} /> : <section className="flex min-h-0 flex-1 flex-col"><div className="cr-review-toolbar"><label className="sr-only" htmlFor="review-target">Review changes</label><select id="review-target" className="cr-review-select" value={selectedValue} onChange={(event) => { if (event.target.value === "last_turn") { setMode("last_turn"); return; } setMode("workspace"); setTarget(event.target.value === "uncommitted" ? { kind: "uncommitted" } : { kind: "all", mergeBaseBranch: event.target.value }); }}><option value="last_turn">Last turn</option><option value="uncommitted">Uncommitted changes</option>{review?.selectedBaseBranch ? <option value={review.selectedBaseBranch}>All changes from {review.selectedBaseBranch}</option> : null}{review?.baseBranches.filter((branch) => branch !== review.selectedBaseBranch).map((branch) => <option key={branch} value={branch}>All changes from {branch}</option>)}</select><span className="cr-review-summary">{mode === "last_turn" ? "Last turn" : review?.branch ?? "HEAD"} · <b className="cr-diff-added">+{additions}</b> <b className="cr-diff-deleted">−{deletions}</b></span><DiffStyleToggle value={diffStyle} onChange={setDiffStyle} /></div><div ref={reviewLayoutRef} className="flex min-h-0 flex-1">{content}{isFilesSidebarVisible ? <><div className="cr-resize-handle" onPointerDown={beginSidebarResize} role="separator" aria-orientation="vertical" aria-label="Resize changed files" /><ReviewFilesSidebar files={sidebarFiles} width={filesSidebarWidth} onSelect={(path) => void openReviewFile(path)} /></> : null}</div></section>}</main>;
 }
 
-function ReviewFilesSidebar({ files, threadId, width }: { files: readonly ReviewSidebarFile[]; threadId: string; width: number }) {
-  const navigate = useBbNavigate();
+function DiffStyleToggle({ value, onChange }: { value: DiffStyle; onChange: (style: DiffStyle) => void }) {
+  return <div className="cr-diff-style-toggle" role="group" aria-label="Diff layout"><button type="button" data-active={value === "unified" ? "true" : "false"} aria-pressed={value === "unified"} title="Unified diff" aria-label="Unified diff" onClick={() => onChange("unified")}><span className="cr-diff-style-icon cr-diff-style-unified" aria-hidden="true"><i /><i /></span></button><button type="button" data-active={value === "split" ? "true" : "false"} aria-pressed={value === "split"} title="Split diff" aria-label="Split diff" onClick={() => onChange("split")}><span className="cr-diff-style-icon cr-diff-style-split" aria-hidden="true"><i /><i /></span></button></div>;
+}
+
+function ReviewFilesSidebar({ files, width, onSelect }: { files: readonly ReviewSidebarFile[]; width: number; onSelect: (path: string) => void }) {
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildTree(files.map((file) => ({ path: file.path, kind: "file" as const }))), [files]);
   const statsByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const toggleFolder = useCallback((folderPath: string) => setExpanded((current) => { const next = new Set(current); if (next.has(folderPath)) next.delete(folderPath); else next.add(folderPath); return next; }), []);
-  const openFile = useCallback((filePath: string) => navigate.openThreadPanel({ actionId: "files", title: filePath.split("/").at(-1) ?? filePath, params: { path: filePath }, experimental_filePath: filePath }), [navigate]);
-  return <aside className="cr-review-files-sidebar" style={{ width }}><div className="cr-review-files-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter files…" aria-label="Filter changed files" /></div><div className="min-h-0 flex-1 overflow-y-auto py-2"><ReviewTreeItems items={tree} expanded={expanded} filter={filter.toLowerCase()} onToggle={toggleFolder} onSelect={openFile} statsByPath={statsByPath} /></div></aside>;
+  return <aside className="cr-review-files-sidebar" style={{ width }}><div className="cr-review-files-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter files…" aria-label="Filter changed files" /></div><div className="min-h-0 flex-1 overflow-y-auto py-2"><ReviewTreeItems items={tree} expanded={expanded} filter={filter.toLowerCase()} onToggle={toggleFolder} onSelect={onSelect} statsByPath={statsByPath} /></div></aside>;
 }
 
 function ReviewTreeItems({ items, expanded, filter, onToggle, onSelect, statsByPath, depth = 0 }: { items: TreeNode[]; expanded: Set<string>; filter: string; onToggle: (path: string) => void; onSelect: (path: string) => void; statsByPath: ReadonlyMap<string, ReviewSidebarFile>; depth?: number }) {
   return <>{items.map((item) => { const matching = filter === "" || item.path.toLowerCase().includes(filter) || item.children.some((child) => child.path.toLowerCase().includes(filter)); if (!matching) return null; const open = filter !== "" || expanded.has(item.path); if (item.kind === "directory") return <div key={item.path}><button type="button" className="cr-review-tree-folder" style={{ paddingLeft: 12 + depth * 16 }} onClick={() => onToggle(item.path)}><span>{open ? "⌄" : "›"}</span><span className="truncate">{item.name}</span></button>{open ? <ReviewTreeItems items={item.children} expanded={expanded} filter={filter} onToggle={onToggle} onSelect={onSelect} statsByPath={statsByPath} depth={depth + 1} /> : null}</div>; const stats = statsByPath.get(item.path); return <button type="button" key={item.path} className="cr-review-tree-file" style={{ paddingLeft: 28 + depth * 16 }} onClick={() => onSelect(item.path)} title={`Open ${item.path} in Files`}><FileIcon name={item.name} /><span className="truncate">{item.name}</span>{stats ? <span className="ml-auto shrink-0"><b className="cr-diff-added">+{stats.additions}</b> <b className="cr-diff-deleted">−{stats.deletions}</b></span> : null}</button>; })}</>;
 }
 
-function LastTurnDiff({ diff, threadId, workspacePath }: { diff: string | null; threadId: string; workspacePath: string | null }) {
+function LastTurnDiff({ diff, threadId, workspacePath, diffStyle, expandedFiles, onExpandedChange }: { diff: string | null; threadId: string; workspacePath: string | null; diffStyle: DiffStyle; expandedFiles: Set<string>; onExpandedChange: (files: Set<string>) => void }) {
   const files = useMemo<readonly FileDiffMetadata[]>(() => {
     if (diff === null || diff.length === 0) return [];
     try { return parsePatchFiles(diff).flatMap((patch) => patch.files); } catch { return []; }
   }, [diff]);
   if (files.length === 0) return <EmptyState message="The saved turn diff could not be parsed." />;
-  return <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3"><div className="space-y-2">{files.map((file, index) => <LastTurnFileCard file={file} threadId={threadId} workspacePath={workspacePath} key={`${file.name}-${index}`} />)}</div></div>;
+  return <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3"><div className="space-y-2">{files.map((file, index) => { const filePath = workspaceRelativePath(file.name, workspacePath); return <LastTurnFileCard file={file} threadId={threadId} workspacePath={workspacePath} diffStyle={diffStyle} isExpanded={expandedFiles.has(filePath)} onToggle={() => onExpandedChange(new Set(expandedFiles.has(filePath) ? [...expandedFiles].filter((path) => path !== filePath) : [...expandedFiles, filePath]))} key={`${file.name}-${index}`} />; })}</div></div>;
 }
 
 function fileDiffStats(file: FileDiffMetadata): { additions: number; deletions: number } {
@@ -332,7 +355,7 @@ function fileDiffStats(file: FileDiffMetadata): { additions: number; deletions: 
   return { additions, deletions };
 }
 
-function ReviewCommentableDiff({ file, path }: { file: FileDiffMetadata; path: string }) {
+function ReviewCommentableDiff({ file, path, diffStyle }: { file: FileDiffMetadata; path: string; diffStyle: DiffStyle }) {
   const composer = useComposer();
   const [range, setRange] = useState<SelectedLineRange | null>(null);
   const [comment, setComment] = useState("");
@@ -345,16 +368,16 @@ function ReviewCommentableDiff({ file, path }: { file: FileDiffMetadata; path: s
     setComment("");
     setRange(null);
   }, [comment, composer, lineLabel, path, range]);
-  return <div className="cr-review-diff"><FileDiff fileDiff={file} options={{ disableFileHeader: true, diffStyle: "unified", overflow: "scroll", enableGutterUtility: true, lineHoverHighlight: "line", onLineEnter: ({ lineNumber, annotationSide }) => { hoveredLineRef.current = { lineNumber, side: annotationSide }; } }} renderGutterUtility={(getHoveredLine) => <button className="cr-review-comment-gutter" type="button" aria-label="Add comment on this line" onPointerDown={(event) => { event.preventDefault(); const hoveredLine = getHoveredLine() ?? hoveredLineRef.current; if (hoveredLine !== null && hoveredLine !== undefined) setRange({ start: hoveredLine.lineNumber, end: hoveredLine.lineNumber, side: hoveredLine.side }); }}>+</button>} />{range !== null ? <form className="cr-review-comment-form" onSubmit={(event) => { event.preventDefault(); addCommentToChat(); }}><div className="cr-review-comment-title"><strong>Local comment</strong><span>Comment on line {lineLabel}{range.start}</span></div><textarea value={comment} autoFocus placeholder="Request change" aria-label={`Comment on ${path} line ${lineLabel}${range.start}`} onChange={(event) => setComment(event.target.value)} /><div className="cr-review-comment-actions"><button type="button" onClick={() => { setComment(""); setRange(null); }}>Cancel</button><button type="submit" disabled={comment.trim().length === 0}>Add to chat</button></div></form> : null}</div>;
+  return <div className={`cr-review-diff cr-review-diff-${diffStyle}`}><FileDiff fileDiff={file} options={{ disableFileHeader: true, diffStyle, overflow: "scroll", enableGutterUtility: true, lineHoverHighlight: "line", onLineEnter: ({ lineNumber, annotationSide }) => { hoveredLineRef.current = { lineNumber, side: annotationSide }; } }} renderGutterUtility={(getHoveredLine) => <button className="cr-review-comment-gutter" type="button" aria-label="Add comment on this line" onPointerDown={(event) => { event.preventDefault(); const hoveredLine = getHoveredLine() ?? hoveredLineRef.current; if (hoveredLine !== null && hoveredLine !== undefined) setRange({ start: hoveredLine.lineNumber, end: hoveredLine.lineNumber, side: hoveredLine.side }); }}>+</button>} />{range !== null ? <form className="cr-review-comment-form" onSubmit={(event) => { event.preventDefault(); addCommentToChat(); }}><div className="cr-review-comment-title"><strong>Local comment</strong><span>Comment on line {lineLabel}{range.start}</span></div><textarea value={comment} autoFocus placeholder="Request change" aria-label={`Comment on ${path} line ${lineLabel}${range.start}`} onChange={(event) => setComment(event.target.value)} /><div className="cr-review-comment-actions"><button type="button" onClick={() => { setComment(""); setRange(null); }}>Cancel</button><button type="submit" disabled={comment.trim().length === 0}>Add to chat</button></div></form> : null}</div>;
 }
 
-function LastTurnFileCard({ file, threadId, workspacePath }: { file: FileDiffMetadata; threadId: string; workspacePath: string | null }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+function LastTurnFileCard({ file, threadId, workspacePath, diffStyle, isExpanded, onToggle }: { file: FileDiffMetadata; threadId: string; workspacePath: string | null; diffStyle: DiffStyle; isExpanded: boolean; onToggle: () => void }) {
   const stats = useMemo(() => fileDiffStats(file), [file]);
   const navigate = useBbNavigate();
   const filePath = workspaceRelativePath(file.name, workspacePath);
   const previousPath = file.prevName === undefined ? null : workspaceRelativePath(file.prevName, workspacePath);
-  return <section className="cr-review-file"><div className="cr-review-file-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-left" type="button" aria-expanded={isExpanded} onClick={() => setIsExpanded((value) => !value)}><FileIcon name={filePath} /><span className="truncate font-mono text-xs">{previousPath ? `${previousPath} → ${filePath}` : filePath}</span><span className="ml-auto shrink-0 font-mono text-xs"><b className="cr-diff-added">+{stats.additions}</b> <b className="cr-diff-deleted">−{stats.deletions}</b></span><span className="cr-review-chevron cr-review-chevron-end">{isExpanded ? "⌃" : "⌄"}</span></button><button className="cr-review-open-file" type="button" title={`Open ${filePath} in Files`} aria-label={`Open ${filePath} in Files`} onClick={() => navigate.openThreadPanel({ actionId: "files", title: filePath.split("/").at(-1) ?? filePath, params: { path: filePath }, experimental_filePath: filePath })}><OpenFileIcon /></button></div>{isExpanded ? <div className="cr-review-patch"><ReviewCommentableDiff file={file} path={filePath} /></div> : null}</section>;
+  const fullPath = previousPath ? `${previousPath} → ${filePath}` : filePath;
+  return <section id={reviewFileId(filePath)} className="cr-review-file"><div className="cr-review-file-header"><button className="cr-review-file-label flex min-w-0 flex-1 items-center gap-2 text-left" type="button" aria-expanded={isExpanded} onClick={onToggle} aria-describedby={`${reviewFileId(filePath)}-path`}><FileIcon name={filePath} /><span className="truncate font-mono text-xs">{reviewFileLabel(filePath, previousPath)}</span><span className="ml-auto shrink-0 font-mono text-xs"><b className="cr-diff-added">+{stats.additions}</b> <b className="cr-diff-deleted">−{stats.deletions}</b></span><span className="cr-review-chevron cr-review-chevron-end">{isExpanded ? "⌃" : "⌄"}</span></button><span id={`${reviewFileId(filePath)}-path`} role="tooltip" className="cr-review-file-tooltip">{fullPath}</span><button className="cr-review-open-file" type="button" title={`Open ${filePath} in Files`} aria-label={`Open ${filePath} in Files`} onClick={() => navigate.openThreadPanel({ actionId: "files", title: filePath.split("/").at(-1) ?? filePath, params: { path: filePath }, experimental_filePath: filePath })}><OpenFileIcon /></button></div>{isExpanded ? <div className="cr-review-patch"><ReviewCommentableDiff file={file} path={filePath} diffStyle={diffStyle} /></div> : null}</section>;
 }
 
 function filesFromTurnDiff(diff: string): TurnChangeFile[] {
@@ -378,6 +401,11 @@ function filesFromTurnDiff(diff: string): TurnChangeFile[] {
 
 function turnFileLabel(path: string): string {
   return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
+}
+
+function reviewFileLabel(path: string, previousPath: string | null = null): string {
+  const current = turnFileLabel(path);
+  return previousPath === null ? current : `${turnFileLabel(previousPath)} → ${current}`;
 }
 
 function TurnChangeCard({ message }: PluginMessageDirectiveProps) {
@@ -407,10 +435,11 @@ function TurnChangeCard({ message }: PluginMessageDirectiveProps) {
   return <section className="cr-turn-change-card" data-expanded={expanded ? "true" : "false"}><button className="cr-turn-change-summary" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><span className="cr-turn-change-icon" aria-hidden="true">◇</span><span className="min-w-0"><strong>Edited {files.length || 1} {files.length === 1 ? "file" : "files"}</strong><span><b className="cr-diff-added">+{review.additions}</b> <b className="cr-diff-deleted">−{review.deletions}</b></span></span><span className="cr-turn-change-chevron" aria-hidden="true">{expanded ? "⌄" : "›"}</span></button><button className="cr-turn-review" type="button" onClick={() => navigate.openThreadPanel({ actionId: "review", title: "Review", params: { mode: "last_turn", turnId: review.turnId } })}>Review</button>{expanded ? <div className="cr-turn-change-files">{files.map((file) => <div className="cr-turn-change-file" key={file.path} title={file.path}><FileIcon name={file.path} /><span className="truncate">{turnFileLabel(file.path)}</span><span className="ml-auto shrink-0"><b className="cr-diff-added">+{file.additions}</b> <b className="cr-diff-deleted">−{file.deletions}</b></span></div>)}</div> : null}</section>;
 }
 
-function ReviewFileCard({ file, patch, isExpanded, onToggle }: { file: ReviewFile; patch: { patch: string; truncated: boolean } | null; isExpanded: boolean; onToggle: () => void }) {
+function ReviewFileCard({ file, patch, isExpanded, onToggle, diffStyle }: { file: ReviewFile; patch: { patch: string; truncated: boolean } | null; isExpanded: boolean; onToggle: () => void; diffStyle: DiffStyle }) {
   const status = file.changeKind === "added" ? "A" : file.changeKind === "deleted" ? "D" : file.changeKind === "renamed" ? "R" : "M";
   const navigate = useBbNavigate();
-  return <section className="cr-review-file"><div className="cr-review-file-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-left" type="button" onClick={onToggle}><span className="cr-review-chevron">{isExpanded ? "⌄" : "›"}</span><FileIcon name={file.path} /><span className="truncate font-mono text-xs">{file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}</span><span className={`cr-review-status cr-review-status-${file.changeKind}`}>{status}</span><span className="ml-auto shrink-0 font-mono text-xs"><b className="cr-diff-added">+{file.additions}</b> <b className="cr-diff-deleted">−{file.deletions}</b></span></button><button className="cr-review-open-file" type="button" title={`Open ${file.path} in Files`} aria-label={`Open ${file.path} in Files`} onClick={() => navigate.openThreadPanel({ actionId: "files", title: file.path.split("/").at(-1) ?? file.path, params: { path: file.path }, experimental_filePath: file.path })}><OpenFileIcon /></button></div>{isExpanded ? <div className="cr-review-patch">{file.binary ? <p>Binary file changed.</p> : file.loadMode === "too_large" ? <p>This file is too large to display.</p> : patch === null ? <p>Loading diff…</p> : <>{patch.truncated ? <p className="cr-review-truncated">Diff is truncated.</p> : null}<ReviewPatch path={file.path} patch={patch.patch} /></>}</div> : null}</section>;
+  const fullPath = file.previousPath ? `${file.previousPath} → ${file.path}` : file.path;
+  return <section id={reviewFileId(file.path)} className="cr-review-file"><div className="cr-review-file-header"><button className="cr-review-file-label flex min-w-0 flex-1 items-center gap-2 text-left" type="button" onClick={onToggle} aria-describedby={`${reviewFileId(file.path)}-path`}><span className="cr-review-chevron">{isExpanded ? "⌄" : "›"}</span><FileIcon name={file.path} /><span className="truncate font-mono text-xs">{reviewFileLabel(file.path, file.previousPath)}</span><span className={`cr-review-status cr-review-status-${file.changeKind}`}>{status}</span><span className="ml-auto shrink-0 font-mono text-xs"><b className="cr-diff-added">+{file.additions}</b> <b className="cr-diff-deleted">−{file.deletions}</b></span></button><span id={`${reviewFileId(file.path)}-path`} role="tooltip" className="cr-review-file-tooltip">{fullPath}</span><button className="cr-review-open-file" type="button" title={`Open ${file.path} in Files`} aria-label={`Open ${file.path} in Files`} onClick={() => navigate.openThreadPanel({ actionId: "files", title: file.path.split("/").at(-1) ?? file.path, params: { path: file.path }, experimental_filePath: file.path })}><OpenFileIcon /></button></div>{isExpanded ? <div className="cr-review-patch">{file.binary ? <p>Binary file changed.</p> : file.loadMode === "too_large" ? <p>This file is too large to display.</p> : patch === null ? <p>Loading diff…</p> : <>{patch.truncated ? <p className="cr-review-truncated">Diff is truncated.</p> : null}<ReviewPatch path={file.path} patch={patch.patch} diffStyle={diffStyle} /></>}</div> : null}</section>;
 }
 
 function reviewPatchForRenderer(path: string, patch: string): string | null {
@@ -421,7 +450,7 @@ function reviewPatchForRenderer(path: string, patch: string): string | null {
   return `diff --git a/${normalizedPath} b/${normalizedPath}\n--- a/${normalizedPath}\n+++ b/${normalizedPath}\n${hunks}\n`;
 }
 
-function ReviewPatch({ path, patch }: { path: string; patch: string }) {
+function ReviewPatch({ path, patch, diffStyle }: { path: string; patch: string; diffStyle: DiffStyle }) {
   const fileDiff = useMemo<FileDiffMetadata | null>(() => {
     try {
       const renderablePatch = reviewPatchForRenderer(path, patch);
@@ -431,7 +460,7 @@ function ReviewPatch({ path, patch }: { path: string; patch: string }) {
     } catch { return null; }
   }, [path, patch]);
   if (fileDiff === null) return <p>Unable to parse this patch.</p>;
-  return <ReviewCommentableDiff file={fileDiff} path={path} />;
+  return <ReviewCommentableDiff file={fileDiff} path={path} diffStyle={diffStyle} />;
 }
 
 function EmptyState({ message, onReload }: { message: string; onReload?: () => Promise<void> }) { return <main className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground"><div><p>{message}</p>{onReload ? <button className="mt-3 text-xs text-foreground underline" onClick={() => void onReload()}>Try again</button> : null}</div></main>; }

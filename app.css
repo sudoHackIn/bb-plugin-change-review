@@ -69,6 +69,16 @@
 .cr-review-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 0.75rem; border-bottom: 1px solid var(--border); padding: 0.75rem 1rem; }
 .cr-review-select { min-width: 0; flex: 1; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--background); padding: 0.4rem 0.6rem; font-size: 0.8125rem; color: var(--foreground); }
 .cr-review-summary { flex: 0 0 auto; color: var(--muted-foreground); font-size: 0.75rem; }
+.cr-diff-style-toggle { display: inline-flex; flex: 0 0 auto; gap: 0.15rem; border: 1px solid var(--border); border-radius: 0.65rem; padding: 0.2rem; background: var(--background); }
+.cr-diff-style-toggle button { display: inline-flex; width: 2rem; height: 2rem; align-items: center; justify-content: center; border-radius: 0.45rem; color: var(--muted-foreground); }
+.cr-diff-style-toggle button:hover { background: var(--muted); color: var(--foreground); }
+.cr-diff-style-toggle button[data-active="true"] { background: var(--muted); color: var(--foreground); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent); }
+.cr-diff-style-toggle button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ring); }
+.cr-diff-style-icon { display: flex; width: 1.2rem; height: 1.2rem; overflow: hidden; border: 1.5px solid currentColor; border-radius: 0.35rem; }
+.cr-diff-style-icon i { display: block; flex: 1; }
+.cr-diff-style-unified { flex-direction: column; }
+.cr-diff-style-unified i:first-child { border-bottom: 1.5px solid currentColor; }
+.cr-diff-style-split i:first-child { border-right: 1.5px solid currentColor; }
 .cr-review-files-sidebar { display: flex; min-width: 0; flex: 0 0 auto; flex-direction: column; border-left: 1px solid var(--border); background: var(--background); }
 .cr-review-files-filter { flex: 0 0 auto; border-bottom: 1px solid var(--border); padding: 0.7rem; }
 .cr-review-files-filter input { width: 100%; border: 1px solid var(--border); border-radius: 0.55rem; background: var(--background); padding: 0.45rem 0.65rem; color: var(--foreground); font-size: 0.8125rem; outline: none; }
@@ -79,9 +89,12 @@
 .cr-review-tree-file { color: var(--foreground); }
 .cr-review-tree-folder:hover, .cr-review-tree-file:hover { background: var(--muted); }
 .cr-review-tree-file > span:last-child { display: flex; gap: 0.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.68rem; }
-.cr-review-file { margin-top: 0.5rem; overflow: hidden; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--background); }
-.cr-review-file-header { display: flex; width: 100%; min-width: 0; align-items: center; gap: 0.5rem; padding: 0.45rem 0.65rem; text-align: left; }
+.cr-review-file { position: relative; z-index: 0; margin-top: 0.5rem; overflow: visible; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--background); }
+.cr-review-file:hover { z-index: 2; }
+.cr-review-file-header { position: relative; display: flex; width: 100%; min-width: 0; align-items: center; gap: 0.5rem; padding: 0.45rem 0.65rem; text-align: left; }
 .cr-review-file-header:hover { background: var(--muted); }
+.cr-review-file-tooltip { position: absolute; z-index: 30; top: calc(100% + 0.4rem); left: 0.65rem; display: none; max-width: min(44rem, calc(100vw - 3rem)); overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--popover, var(--background)); padding: 0.4rem 0.55rem; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.7rem; line-height: 1.35; box-shadow: 0 8px 20px color-mix(in oklab, var(--foreground) 22%, transparent); pointer-events: none; }
+.cr-review-file-label:hover + .cr-review-file-tooltip, .cr-review-file-label:focus-visible + .cr-review-file-tooltip { display: block; }
 .cr-review-open-file { display: inline-flex; width: 1.65rem; height: 1.65rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.4rem; color: var(--muted-foreground); }
 .cr-review-open-file svg { width: 1rem; height: 1rem; }
 .cr-review-open-file:hover { background: color-mix(in oklch, var(--foreground) 8%, transparent); color: var(--foreground); }
@@ -96,6 +109,7 @@
 .cr-review-patch pre { margin: 0; padding: 0.6rem 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.55; }
 .cr-review-patch code { display: block; min-width: max-content; padding: 0 0.75rem; white-space: pre; }
 .cr-review-diff { min-width: 34rem; }
+.cr-review-diff-split { min-width: 52rem; }
 .cr-review-comment-gutter { display: inline-flex; width: 1.35rem; height: 1.35rem; align-items: center; justify-content: center; border-radius: 0.35rem; background: color-mix(in oklch, var(--foreground) 78%, var(--canvas)); color: var(--canvas); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 400; line-height: 1; }
 .cr-review-comment-form { margin: 0.75rem; max-width: 34rem; overflow: hidden; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--background); box-shadow: 0 8px 18px color-mix(in oklab, var(--foreground) 7%, transparent); }
 .cr-review-comment-title { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--border); }
