@@ -546,7 +546,7 @@ function ReviewFilesSidebar({ files, width, onSelect }: { files: readonly Review
   const tree = useMemo(() => buildTree(files.map((file) => ({ path: file.path, kind: "file" as const }))), [files]);
   const statsByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const toggleFolder = useCallback((folderPath: string) => setExpanded((current) => { const next = new Set(current); if (next.has(folderPath)) next.delete(folderPath); else next.add(folderPath); return next; }), []);
-  return <aside className="cr-review-files-sidebar" style={{ width }}><div className="cr-review-files-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter files…" aria-label="Filter changed files" /></div><div className="min-h-0 flex-1 overflow-y-auto py-2"><ReviewTreeItems items={tree} expanded={expanded} filter={filter.toLowerCase()} onToggle={toggleFolder} onSelect={onSelect} statsByPath={statsByPath} /></div></aside>;
+  return <aside className="cr-review-files-sidebar" style={{ width }}><div className="cr-review-files-filter"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter files…" aria-label="Filter changed files" /></div><div className="cr-review-files-tree min-h-0 flex-1 overflow-y-auto py-2"><ReviewTreeItems items={tree} expanded={expanded} filter={filter.toLowerCase()} onToggle={toggleFolder} onSelect={onSelect} statsByPath={statsByPath} /></div></aside>;
 }
 
 function ReviewTreeItems({ items, expanded, filter, onToggle, onSelect, statsByPath, depth = 0 }: { items: TreeNode[]; expanded: Set<string>; filter: string; onToggle: (path: string) => void; onSelect: (path: string) => void; statsByPath: ReadonlyMap<string, ReviewSidebarFile>; depth?: number }) {
@@ -666,8 +666,7 @@ function TurnChangeCard({ message }: PluginMessageDirectiveProps) {
   const navigate = useBbNavigate();
   const [review, setReview] = useState<LastTurnReview | null>(null);
   const [expanded, setExpanded] = useState(true);
-  const [preview, setPreview] = useState<{ file: TurnChangeFile; top: number; left: number; maxHeight: number } | null>(null);
-  const previewCloseTimer = useRef<number | null>(null);
+  const [selectedFile, setSelectedFile] = useState<TurnChangeFile | null>(null);
   useEffect(() => {
     if (message.turnId === null) return;
     let cancelled = false;
@@ -687,34 +686,15 @@ function TurnChangeCard({ message }: PluginMessageDirectiveProps) {
   }, [message.threadId, message.turnId, rpc]);
   if (review?.state !== "ready" || review.additions + review.deletions === 0) return null;
   const files = filesFromTurnDiff(review.diff ?? "");
-  const keepPreviewOpen = () => {
-    if (previewCloseTimer.current !== null) window.clearTimeout(previewCloseTimer.current);
-    previewCloseTimer.current = null;
-  };
-  const closePreviewSoon = () => {
-    keepPreviewOpen();
-    previewCloseTimer.current = window.setTimeout(() => setPreview(null), 180);
-  };
-  const showPreview = (file: TurnChangeFile, target: HTMLElement) => {
-    keepPreviewOpen();
-    const rect = target.getBoundingClientRect();
-    const gap = 8;
-    const availableAbove = rect.top - gap - 16;
-    const availableBelow = window.innerHeight - rect.bottom - gap - 16;
-    const openAbove = availableBelow < 280 && availableAbove > availableBelow;
-    const maxHeight = Math.max(120, Math.min(448, openAbove ? availableAbove : availableBelow));
-    const top = openAbove ? Math.max(16, rect.top - gap - maxHeight) : rect.bottom + gap;
-    setPreview({ file, top, left: Math.max(16, Math.min(rect.left, window.innerWidth - 680)), maxHeight });
-  };
-  return <><section className="cr-turn-change-card" data-expanded={expanded ? "true" : "false"}><button className="cr-turn-change-summary" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><span className="cr-turn-change-icon" aria-hidden="true">◇</span><span className="min-w-0"><strong>Edited {files.length || 1} {files.length === 1 ? "file" : "files"}</strong><span><b className="cr-diff-added">+{review.additions}</b> <b className="cr-diff-deleted">−{review.deletions}</b></span></span><span className="cr-turn-change-chevron" aria-hidden="true">{expanded ? "⌄" : "›"}</span></button><button className="cr-turn-review" type="button" onClick={() => navigate.openThreadPanel({ actionId: "review", title: "Review", params: { mode: "last_turn", turnId: review.turnId } })}>Review</button>{expanded ? <div className="cr-turn-change-files">{files.map((file) => <button type="button" className="cr-turn-change-file" key={file.path} onPointerEnter={(event) => showPreview(file, event.currentTarget)} onPointerLeave={closePreviewSoon} onFocus={(event) => showPreview(file, event.currentTarget)} onBlur={closePreviewSoon}><FileIcon name={file.path} /><span className="truncate">{turnFileLabel(file.path)}</span><span className="ml-auto shrink-0"><b className="cr-diff-added">+{file.additions}</b> <b className="cr-diff-deleted">−{file.deletions}</b></span></button>)}</div> : null}</section>{preview !== null ? <TurnChangePreview file={preview.file} top={preview.top} left={preview.left} maxHeight={preview.maxHeight} onPointerEnter={keepPreviewOpen} onPointerLeave={closePreviewSoon} /> : null}</>;
+  return <section className="cr-turn-change-card" data-expanded={expanded ? "true" : "false"}><button className="cr-turn-change-summary" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><span className="cr-turn-change-icon" aria-hidden="true">◇</span><span className="min-w-0"><strong>Edited {files.length || 1} {files.length === 1 ? "file" : "files"}</strong><span><b className="cr-diff-added">+{review.additions}</b> <b className="cr-diff-deleted">−{review.deletions}</b></span></span><span className="cr-turn-change-chevron" aria-hidden="true">{expanded ? "⌄" : "›"}</span></button><button className="cr-turn-review" type="button" onClick={() => navigate.openThreadPanel({ actionId: "review", title: "Review", params: { mode: "last_turn", turnId: review.turnId } })}>Review</button>{expanded ? <div className="cr-turn-change-files">{files.map((file) => <button type="button" className="cr-turn-change-file" data-selected={selectedFile?.path === file.path ? "true" : undefined} key={file.path} aria-pressed={selectedFile?.path === file.path} onClick={() => setSelectedFile((selected) => selected?.path === file.path ? null : file)}><FileIcon name={file.path} /><span className="truncate">{turnFileLabel(file.path)}</span><span className="ml-auto shrink-0"><b className="cr-diff-added">+{file.additions}</b> <b className="cr-diff-deleted">−{file.deletions}</b></span></button>)}{selectedFile !== null ? <TurnChangePreview file={selectedFile} onClose={() => setSelectedFile(null)} /> : null}</div> : null}</section>;
 }
 
-function TurnChangePreview({ file, top, left, maxHeight, onPointerEnter, onPointerLeave }: { file: TurnChangeFile; top: number; left: number; maxHeight: number; onPointerEnter: () => void; onPointerLeave: () => void }) {
+function TurnChangePreview({ file, onClose }: { file: TurnChangeFile; onClose: () => void }) {
   const parsed = useMemo<FileDiffMetadata | null>(() => {
     try { return parsePatchFiles(file.patch).flatMap((patch) => patch.files)[0] ?? null; } catch { return null; }
   }, [file.patch]);
   if (parsed === null) return null;
-  return <aside className="cr-turn-file-preview" style={{ top, left, maxHeight }} aria-label={`Changes in ${file.path}`} onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave} onWheel={(event) => event.stopPropagation()}><header>{file.path}</header><div><FileDiff fileDiff={parsed} options={{ disableFileHeader: true, diffStyle: "unified", overflow: "scroll", disableVirtualizationBuffers: true }} /></div></aside>;
+  return <aside className="cr-turn-file-preview" aria-label={`Changes in ${file.path}`}><header><span>{file.path}</span><button type="button" onClick={onClose} aria-label={`Close changes in ${file.path}`} title="Close diff">×</button></header><div><FileDiff fileDiff={parsed} options={{ disableFileHeader: true, diffStyle: "unified", overflow: "scroll", disableVirtualizationBuffers: true }} /></div></aside>;
 }
 
 function ReviewFileCard({ file, threadId, target, mergeBaseRef, patch, isExpanded, onToggle, diffStyle }: { file: ReviewFile; threadId: string; target: ReviewTarget; mergeBaseRef: string | null; patch: { patch: string; truncated: boolean } | null; isExpanded: boolean; onToggle: () => void; diffStyle: DiffStyle }) {
