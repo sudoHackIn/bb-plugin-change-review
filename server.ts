@@ -34,6 +34,10 @@ const lastTurnReviewSchema = z.object({
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
 });
+const reviewFileContentsSchema = z.object({
+  oldFile: z.string().nullable(),
+  newFile: z.string().nullable(),
+});
 const symbolDefinitionSchema = z.object({
   path: z.string(),
   line: z.number().int().positive(),
@@ -86,6 +90,7 @@ export const rpcContract = defineRpcContract({
       branch: z.string().nullable(),
       baseBranches: z.array(z.string()),
       selectedBaseBranch: z.string().nullable(),
+      mergeBaseRef: z.string().nullable(),
       files: z.array(reviewFileSchema),
       shortstat: z.string(),
       initialPatches: z.array(z.object({ path: z.string(), patch: z.string(), truncated: z.boolean() })),
@@ -94,6 +99,20 @@ export const rpcContract = defineRpcContract({
   reviewPatches: {
     input: z.object({ threadId: z.string(), target: reviewTargetSchema, paths: z.array(z.string().min(1)).min(1).max(50) }).strict(),
     output: z.object({ patches: z.array(z.object({ path: z.string(), patch: z.string(), truncated: z.boolean() })) }),
+  },
+  reviewFileContents: {
+    input: z.object({
+      threadId: z.string(),
+      target: reviewTargetSchema,
+      path: z.string().min(1),
+      previousPath: z.string().nullable(),
+      mergeBaseRef: z.string().nullable(),
+    }).strict(),
+    output: reviewFileContentsSchema,
+  },
+  lastTurnFileContents: {
+    input: z.object({ threadId: z.string(), turnId: z.string().min(1).nullable().default(null), path: z.string().min(1) }).strict(),
+    output: reviewFileContentsSchema,
   },
   lastTurnReview: {
     input: z.object({ threadId: z.string(), turnId: z.string().min(1).nullable().default(null) }).strict(),
@@ -135,6 +154,45 @@ async function latestCompletedTurnDiff(
     }
   }
   return null;
+}
+
+function patchForPath(diff: string, requestedPath: string): string | null {
+  const normalizedPath = requestedPath.replace(/^\.\//u, "");
+  for (const patch of diff.split(/(?=^diff --git )/mu)) {
+    const header = patch.match(/^diff --git a\/(.+?) b\/(.+)$/mu);
+    if (header?.[2] === normalizedPath || header?.[1] === normalizedPath) return patch;
+  }
+  return null;
+}
+
+function reversePatchFromCurrentFile(current: string, patch: string): string | null {
+  const trailingNewline = current.endsWith("\n");
+  const lines = current.split("\n");
+  if (trailingNewline) lines.pop();
+  let lineOffset = 0;
+  const patchLines = patch.split("\n");
+  for (let index = 0; index < patchLines.length; index += 1) {
+    const hunk = patchLines[index]?.match(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u);
+    if (hunk === null || hunk === undefined) continue;
+    const newStart = Number(hunk[2]);
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    index += 1;
+    while (index < patchLines.length && !patchLines[index]?.startsWith("@@")) {
+      const line = patchLines[index] ?? "";
+      if (line.startsWith("diff --git ")) break;
+      if (line.startsWith(" ")) { oldLines.push(line.slice(1)); newLines.push(line.slice(1)); }
+      else if (line.startsWith("-")) oldLines.push(line.slice(1));
+      else if (line.startsWith("+")) newLines.push(line.slice(1));
+      index += 1;
+    }
+    index -= 1;
+    const start = newStart - 1 + lineOffset;
+    if (start < 0 || newLines.some((line, offset) => lines[start + offset] !== line)) return null;
+    lines.splice(start, newLines.length, ...oldLines);
+    lineOffset += oldLines.length - newLines.length;
+  }
+  return lines.join("\n") + (trailingNewline ? "\n" : "");
 }
 
 async function workspaceForThread(bb: BbPluginApi, threadId: string) {
@@ -565,7 +623,7 @@ export default async function plugin(bb: BbPluginApi) {
     async review({ threadId, target }) {
       const environment = await workspaceForThread(bb, threadId);
       if (environment === null || !environment.isGitRepo) {
-        return { state: "not_available" as const, message: "This thread has no Git workspace to review.", branch: null, baseBranches: [], selectedBaseBranch: null, files: [], shortstat: "", initialPatches: [] };
+        return { state: "not_available" as const, message: "This thread has no Git workspace to review.", branch: null, baseBranches: [], selectedBaseBranch: null, mergeBaseRef: null, files: [], shortstat: "", initialPatches: [] };
       }
       const branches = await bb.sdk.environments.diffBranches({ environmentId: environment.id, limit: "200", ...(environment.branchName ? { selectedBranch: environment.branchName } : {}) });
       const baseBranches = [...new Set([...branches.branches, ...branches.remoteBranches])];
@@ -577,9 +635,9 @@ export default async function plugin(bb: BbPluginApi) {
         : { target: "all" as const, mergeBaseBranch: selectedBaseBranch };
       const result = await bb.sdk.environments.diffFiles({ environmentId: environment.id, ...diffTarget });
       if (result.outcome !== "available") {
-        return { state: "not_available" as const, message: result.outcome === "unavailable" ? result.failure.message : result.message, branch: environment.branchName, baseBranches, selectedBaseBranch, files: [], shortstat: "", initialPatches: [] };
+        return { state: "not_available" as const, message: result.outcome === "unavailable" ? result.failure.message : result.message, branch: environment.branchName, baseBranches, selectedBaseBranch, mergeBaseRef: null, files: [], shortstat: "", initialPatches: [] };
       }
-      return { state: "ready" as const, message: null, branch: environment.branchName, baseBranches, selectedBaseBranch, files: result.files, shortstat: result.shortstat, initialPatches: result.initialPatches };
+      return { state: "ready" as const, message: null, branch: environment.branchName, baseBranches, selectedBaseBranch, mergeBaseRef: result.mergeBaseRef, files: result.files, shortstat: result.shortstat, initialPatches: result.initialPatches };
     },
     async reviewPatches({ threadId, target, paths }) {
       const environment = await workspaceForThread(bb, threadId);
@@ -587,6 +645,41 @@ export default async function plugin(bb: BbPluginApi) {
       const diffTarget = target.kind === "uncommitted" ? { type: "uncommitted" as const } : { type: "all" as const, mergeBaseBranch: target.mergeBaseBranch };
       const result = await bb.sdk.environments.diffPatch({ environmentId: environment.id, target: diffTarget, paths });
       return { patches: result.outcome === "available" ? result.patches : [] };
+    },
+    async reviewFileContents({ threadId, target, path, previousPath, mergeBaseRef }) {
+      const environment = await workspaceForThread(bb, threadId);
+      if (environment === null || !environment.isGitRepo) return { oldFile: null, newFile: null };
+      const targetWithRef = target.kind === "uncommitted"
+        ? { target: "uncommitted" as const }
+        : mergeBaseRef === null
+          ? null
+          : { target: "all" as const, mergeBaseRef };
+      if (targetWithRef === null) return { oldFile: null, newFile: null };
+      const [oldResult, newResult] = await Promise.all([
+        bb.sdk.environments.diffFile({ environmentId: environment.id, ...targetWithRef, path: previousPath ?? path, side: "old" }).catch(() => null),
+        bb.sdk.environments.diffFile({ environmentId: environment.id, ...targetWithRef, path, side: "new" }).catch(() => null),
+      ]);
+      return {
+        oldFile: oldResult?.contentEncoding === "utf8" ? oldResult.content : null,
+        newFile: newResult?.contentEncoding === "utf8" ? newResult.content : null,
+      };
+    },
+    async lastTurnFileContents({ threadId, turnId, path: relativePath }) {
+      const [environment, turn] = await Promise.all([
+        workspaceForThread(bb, threadId),
+        latestCompletedTurnDiff(bb, threadId, turnId),
+      ]);
+      if (environment === null || turn === null) return { oldFile: null, newFile: null };
+      const absolutePath = safeWorkspacePath(environment.path, relativePath);
+      const patch = patchForPath(turn.diff, relativePath);
+      if (absolutePath === null || patch === null) return { oldFile: null, newFile: null };
+      try {
+        const current = await bb.sdk.files.read({ hostId: environment.hostId, path: absolutePath, rootPath: environment.path });
+        if (current.contentEncoding !== "utf8" || current.sizeBytes > 1024 * 1024) return { oldFile: null, newFile: null };
+        return { oldFile: reversePatchFromCurrentFile(current.content, patch), newFile: current.content };
+      } catch {
+        return { oldFile: null, newFile: null };
+      }
     },
     async lastTurnReview({ threadId, turnId }) {
       const environment = await workspaceForThread(bb, threadId);

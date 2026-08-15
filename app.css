@@ -27,6 +27,7 @@
 .cr-code-line-number { padding-right: 0.7rem; border-right: 1px solid var(--border); color: var(--muted-foreground); text-align: right; user-select: none; }
 .cr-code-line code { min-width: max-content; padding-left: 0.85rem; white-space: pre; }
 .cr-symbol-navigation .cr-code-line code { cursor: text; }
+.cr-symbol-link, [data-symbol-link="true"] { color: var(--primary) !important; cursor: pointer; text-decoration: underline; text-decoration-color: currentColor; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .cr-symbol-hint { position: sticky; top: 0; z-index: 4; display: flex; width: max-content; min-width: 100%; align-items: center; gap: 0.45rem; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--background) 94%, transparent); padding: 0.35rem 0.75rem; color: var(--muted-foreground); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.7rem; line-height: 1.25; backdrop-filter: blur(8px); }
 .cr-symbol-provider-dot { width: 0.45rem; height: 0.45rem; flex: 0 0 auto; border-radius: 999px; background: #198754; box-shadow: 0 0 0 2px color-mix(in oklab, #198754 18%, transparent); }
 .cr-code-comment-button { align-self: center; width: 1.2rem; height: 1.2rem; margin-left: 0.35rem; border-radius: 0.3rem; background: color-mix(in oklch, var(--foreground) 78%, var(--canvas)); color: var(--canvas); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 1.1rem; line-height: 1; opacity: 0; transition: opacity 120ms ease; }
@@ -70,11 +71,11 @@
 .cr-review-header { display: flex; height: 3.5rem; flex: 0 0 auto; align-items: center; gap: 0.5rem; border-bottom: 1px solid var(--border); padding: 0 1rem; }
 .cr-review-refresh { margin-left: auto; display: inline-flex; size: 2rem; align-items: center; justify-content: center; border-radius: 0.5rem; color: var(--muted-foreground); font-size: 1.2rem; }
 .cr-review-refresh:hover { background: var(--muted); color: var(--foreground); }
-.cr-review-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 0.75rem; border-bottom: 1px solid var(--border); padding: 0.75rem 1rem; }
-.cr-review-select { width: 12rem; min-width: 12rem; flex: 0 0 12rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--background); padding: 0.4rem 0.6rem; font-size: 0.8125rem; color: var(--foreground); }
-.cr-review-summary { flex: 0 0 auto; color: var(--muted-foreground); font-size: 0.75rem; }
+.cr-review-toolbar { display: flex; flex: 0 0 auto; min-width: 0; align-items: center; gap: 0.5rem; overflow: hidden; border-bottom: 1px solid var(--border); padding: 0.75rem 1rem; }
+.cr-review-select { width: 12rem; min-width: 9rem; flex: 0 1 12rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--background); padding: 0.4rem 0.6rem; font-size: 0.8125rem; color: var(--foreground); }
+.cr-review-summary { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--muted-foreground); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
 .cr-review-toolbar { justify-content: flex-start; }
-.cr-diff-style-toggle { margin-left: auto; }
+.cr-diff-style-toggle { margin-left: 0; }
 .cr-review-refresh { margin-left: 0; }
 .cr-review-files-toggle { display: inline-flex; width: 2rem; height: 2rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.5rem; color: var(--muted-foreground); }
 .cr-review-files-toggle svg { width: 1.15rem; height: 1.15rem; }
@@ -125,8 +126,11 @@
 .cr-review-patch p { margin: 0; padding: 0.9rem; color: var(--muted-foreground); font-size: 0.8rem; }
 .cr-review-patch pre { margin: 0; padding: 0.6rem 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.55; }
 .cr-review-patch code { display: block; min-width: max-content; padding: 0 0.75rem; white-space: pre; }
-.cr-review-diff { min-width: 34rem; }
+.cr-review-diff { position: relative; min-width: 34rem; }
 .cr-review-diff-split { min-width: 52rem; }
+.cr-split-resize-handle { position: absolute; z-index: 5; top: 0; bottom: 0; width: 10px; transform: translateX(-50%); cursor: col-resize; touch-action: none; }
+.cr-split-resize-handle::after { position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; content: ""; transition: background-color 120ms ease; }
+.cr-split-resize-handle:hover::after, .cr-split-resize-handle:active::after { background: color-mix(in oklch, var(--primary) 72%, transparent); }
 .cr-review-comment-gutter { display: inline-flex; width: 1.35rem; height: 1.35rem; align-items: center; justify-content: center; border-radius: 0.35rem; background: color-mix(in oklch, var(--foreground) 78%, var(--canvas)); color: var(--canvas); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 400; line-height: 1; }
 .cr-review-comment-form { margin: 0.75rem; max-width: 34rem; overflow: hidden; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--background); box-shadow: 0 8px 18px color-mix(in oklab, var(--foreground) 7%, transparent); }
 .cr-review-comment-title { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--border); }
